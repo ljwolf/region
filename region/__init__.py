@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 from . import csgraph_utils
 from . import max_p_regions
 from . import p_regions
