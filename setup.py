@@ -11,7 +11,7 @@ here = path.abspath(path.dirname(__file__))
 
 MAJOR = 0
 MINOR = 1
-PATCH = 5
+PATCH = 6
 VERSION = "{}.{}.{}".format(MAJOR, MINOR, PATCH)
 
 if __name__ == "__main__":
