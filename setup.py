@@ -76,5 +76,5 @@ if __name__ == "__main__":
             'pysal'
         ],
 
-        python_requires='~=3.3',  # ~=3.3 means >=3.3 and <4
+#        python_requires='~=3.3',  # ~=3.3 means >=3.3 and <4
     )
