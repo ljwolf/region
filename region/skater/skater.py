@@ -9,9 +9,8 @@ import copy
 deletion = namedtuple('deletion', ('in_node', 'out_node', 'score'))
 
 class Spanning_Forest(object):
-    def __init__(self,
+    def __init__(self, n_clusters=None,
                  dissimilarity=skm.manhattan_distances,
-                 affinity=None,
                  reduction=np.sum,
                  center=np.mean):
         """
@@ -29,13 +28,8 @@ class Spanning_Forest(object):
               yield some kind of score where larger values are *less desirable* than smaller values. 
               Typically, this means we use addition. 
         """
-        if affinity is not None:
-            # invert the 0,1 affinity to 
-            # to an unbounded positive dissimilarity
-            metric = lambda x: -np.log(affinity(x))
-        else:
-            metric = dissimilarity
-        self.metric = metric
+        self.n_clusters = n_clusters
+        self.metric = dissimilarity
         self.reduction = reduction
         self.center = center
     
@@ -44,8 +38,8 @@ class Spanning_Forest(object):
                                                                                                 self.reduction, 
                                                                                                 self.center)
     
-    def fit(self, n_clusters, W, 
-            data=None, quorum=-np.inf, trace=False, islands='increase',
+    def fit(self, data, W, 
+            floor=-np.inf, trace=False, islands='increase',
             verbose=False):
         """
         n_clusters : int of clusters wanted
@@ -71,7 +65,10 @@ class Spanning_Forest(object):
             attribute_kernel = np.ones((W.n,W.n))
             data = np.ones((W.n,1))
         else:
-            attribute_kernel = self.metric(data)
+            if self.affinity == 'precomputed':
+                attribute_kernel = data
+            else:
+                attribute_kernel = self.metric(data)
         W.transform = 'b'
         W = W.sparse
         start = time.time()
