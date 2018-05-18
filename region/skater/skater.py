@@ -46,7 +46,7 @@ class Spanning_Forest(object):
         W : pysal W object expressing the neighbor relationships between observations. 
             Should be symmetric and binary, so Queen/Rook, DistanceBand, or a symmetrized KNN.
         data: np.ndarray of (N,P) shape with N observations and P features
-        quorum: floor on the size of regions.
+        floor: floor on the size of regions.
         trace: bool denoting whether to store intermediate
                labelings as the tree gets pruned
         islands: string describing what to do with islands. 
@@ -65,20 +65,23 @@ class Spanning_Forest(object):
             attribute_kernel = np.ones((W.n,W.n))
             data = np.ones((W.n,1))
         else:
-            if self.affinity == 'precomputed':
+            if self.metric == 'precomputed':
                 attribute_kernel = data
             else:
                 attribute_kernel = self.metric(data)
         W.transform = 'b'
         W = W.sparse
         start = time.time()
+    
+        n_clusters = self.n_clusters
 
         super_verbose = verbose > 1
         start_W = time.time()
         dissim = W.multiply(attribute_kernel)
         dissim.eliminate_zeros()
+        dissim = dissim.tocsr()
         end_W = time.time() - start_W
-        
+        self.dissim = dissim 
         if super_verbose:
             print('Computing Affinity Kernel took {:.2f}s'.format(end_W))
 
@@ -107,15 +110,15 @@ class Spanning_Forest(object):
             if not ignoring_islands:
                 n_clusters += (current_n_subtrees)      
             _,island_populations = np.unique(current_labels, return_counts=True)
-            if (island_populations < quorum).any():
-                raise ValueError("Islands must be larger than the quorum. If not, drop the small islands and solve for"
+            if (island_populations < floor).any():
+                raise ValueError("Islands must be larger than the floor. If not, drop the small islands and solve for"
                                  " clusters in the remaining field.")
         if trace:
             self._trace.append((current_labels, deletion(np.nan, np.nan, np.inf)))
         if super_verbose:
             print(self._trace[-1])
         while current_n_subtrees < n_clusters: # while we don't have enough regions
-            best_deletion = self.find_cut(MSF, data, quorum=quorum, 
+            best_deletion = self.find_cut(MSF, data, floor=floor, 
                                           labels=None, target_label=None, verbose=verbose)
 
             if np.isfinite(best_deletion.score): # if our search succeeds
@@ -126,7 +129,7 @@ class Spanning_Forest(object):
             else: # otherwise, it means the MSF admits no further cuts (no backtracking here)
                 current_n_subtrees, current_labels = cg.connected_components(MSF, directed=False)
                 warn("MSF contains no valid moves after finding {} subtrees."
-                     "Decrease the size of your quorum to find the remaining {} subtrees."
+                     "Decrease the size of your floor to find the remaining {} subtrees."
                      .format(current_n_subtrees, n_clusters - current_n_subtrees),
                      OptimizeWarning, stacklevel=2)
                 self.current_labels_ = current_labels
@@ -141,19 +144,19 @@ class Spanning_Forest(object):
         self._elapsed_time = time.time() - start
         return self
     
-    def score(self, data, labels=None, quorum=-np.inf):
+    def score(self, data, labels=None, floor=-np.inf):
         """
         This yields a score for the data, given the labels provided. If no labels are provided,
         and the object has been fit, then the labels discovered from the previous fit are used. 
         
-        If a quorum is not passed, it is assumed to be irrelevant. 
+        If a floor is not passed, it is assumed to be irrelevant. 
         
-        If a quorum is passed and the labels do not meet quorum, the score is inf. 
+        If a floor is passed and the labels do not meet floor, the score is inf. 
        
         data    :   (N,P) array of data on which to compute the score of the regions expressed in labels
         labels  :   (N,) array of labels expressing the classification of each observation into a region.
-        quorum  :   int expressing the minimum size of regions. Can be -inf if there is no lower bound. 
-                    Any region below quorum makes the score inf.
+        floor  :   int expressing the minimum size of regions. Can be -inf if there is no lower bound. 
+                    Any region below floor makes the score inf.
         
         NOTE: Optimization occurs with respect to a *dissimilarity* metric, so the problem *minimizes* 
               the map dissimilarity. So, lower scores are better. 
@@ -165,18 +168,22 @@ class Spanning_Forest(object):
                 raise ValueError('Labels not provided and MSF_Prune object has not been fit to data yet.')
         assert data.shape[0] == len(labels), "Length of label array ({}) does not match "\
                                              "length of data ({})! ".format(labels.shape[0], data.shape[0])
-        _, subtree_quorums = np.unique(labels, return_counts=True)
-        n_subtrees = len(subtree_quorums)
-        if (subtree_quorums < quorum).any():
+        _, subtree_floors = np.unique(labels, return_counts=True)
+        n_subtrees = len(subtree_floors)
+        if (subtree_floors < floor).any():
             return np.inf
-        part_scores = [self.reduction(self.metric(X=data[labels==l],
+        if self.metric is not 'precomputed':
+            part_scores = [self.reduction(self.metric(X=data[labels==l],
                                                   Y=self.center(data[labels==l], 
                                                                 axis=0).reshape(1,-1)
                                                  )
                                      ) for l in range(n_subtrees)]
+        else:
+            part_scores = [self.reduction(np.asarray(self.dissim[labels==l, labels==l]))
+                            for l in range(n_subtrees)]
         return self.reduction(part_scores).item()
     
-    def find_cut(self, MSF, data=None, quorum=-np.inf, 
+    def find_cut(self, MSF, data=None, floor=-np.inf, 
                  labels=None, target_label=None, make=False, verbose=False):
         """
         Find the best cut from the MSF.
@@ -186,7 +193,7 @@ class Spanning_Forest(object):
              Constructed from sparse.csgraph.sparse_from_dense or using MSF.eliminate_zeros(). 
              You MUST remove zero entries for this to work, otherwise they are considered no-cost paths. 
         data: (N,p) attribute matrix. If not provided, replaced with (N,1) vector of ones. 
-        quorum: int denoting the minimum number of elements in the region
+        floor: int denoting the minimum number of elements in the region
         labels: (N,) flat vector of labels for each point. Represents the "cluster labels" 
                 for disconnected components of the graph. 
         target_label: int from the labels array to subset the MSF. If passed along with `labels`, then a cut
@@ -233,9 +240,9 @@ class Spanning_Forest(object):
                 raise Exception('Malformed MSF!')
                 
             # compute the score of these components
-            score = self.score(data, labels=local_labels, quorum=quorum)
+            score = self.score(data, labels=local_labels, floor=floor)
                 
-            # if the score is lower than the best score and quorum is met
+            # if the score is lower than the best score and floor is met
             if score < best_deletion.score:
                 best_deletion = deletion(in_node, out_node, score)
         if make:
@@ -257,7 +264,7 @@ class Spanning_Forest(object):
             MSF[in_node, out_node] = 0
             MSF.eliminate_zeros()
             return (MSF, *cg.connected_components(MSF, directed=False))
-        raise OptimizeWarning('Score of the ({},{}) cut is inf, the quorum is likely not met!')
+        raise OptimizeWarning('Score of the ({},{}) cut is inf, the floor is likely not met!')
         
     
 if __name__ == "__main__":
@@ -267,6 +274,6 @@ if __name__ == "__main__":
     data = df[df.filter(like='90').columns.tolist() + df.filter(like='89').columns.tolist()].values
     data_c = (data - data.mean(axis=0)) / data.std(axis=0)
     W = ps.weights.Queen.from_dataframe(df)
-    result = Spanning_Forest().fit(10, W, data_c, quorum=100)
+    result = Spanning_Forest().fit(10, W, data_c, floor=100)
     
-    will_fail = Spanning_Forest().fit(10,W,data_c, quorum=500)
+    will_fail = Spanning_Forest().fit(10,W,data_c, floor=500)
